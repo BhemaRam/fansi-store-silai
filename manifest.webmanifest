@@ -1,0 +1,10 @@
+{
+  "name": "Fansi Store + Silai Management",
+  "short_name": "Fansi + Silai",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#f6f8f6",
+  "theme_color": "#173b32",
+  "description": "Offline-first shop, stock, tailoring orders and khata management",
+  "icons": []
+}

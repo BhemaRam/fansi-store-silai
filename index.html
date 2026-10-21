@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#173b32">
+  <meta name="description" content="Offline-first Fansi Store and Silai Management">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="stylesheet" href="./styles.css">
+  <title>Fansi Store + Silai</title>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><div class="brandmark">FS</div><div><h1>Fansi Store + Silai</h1><p>Shop management · ₹ INR</p></div></div>
+    <div class="top-actions"><span id="syncStatus" class="status offline">Offline mode</span><button id="syncNow" class="button secondary">Sync now</button></div>
+  </header>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <nav id="nav">
+        <button class="nav-item active" data-view="dashboard">▦ <span>Dashboard</span></button>
+        <button class="nav-item" data-view="stock">▤ <span>Stock & Purchase</span></button>
+        <button class="nav-item" data-view="sales">₹ <span>Sales & Billing</span></button>
+        <button class="nav-item" data-view="tailoring">✂ <span>Silai Orders</span></button>
+        <button class="nav-item" data-view="khata">▣ <span>Khata / Payments</span></button>
+        <button class="nav-item" data-view="expenses">↗ <span>Expenses</span></button>
+        <button class="nav-item" data-view="reports">▥ <span>Reports</span></button>
+        <button class="nav-item" data-view="settings">⚙ <span>Settings & Sync</span></button>
+      </nav>
+      <div class="sidebar-note"><span class="dot"></span><div><b>Offline-first</b><small>Entries save on this device first.</small></div></div>
+    </aside>
+    <main id="main" class="main-content">
+      <section class="page-heading"><div><p class="eyebrow">YOUR SHOP AT A GLANCE</p><h2>Dashboard</h2><p class="muted">Aaj ka hisaab, ek hi jagah.</p></div><button class="button" data-action="quick-sale">＋ New sale</button></section>
+      <div id="viewRoot"></div>
+    </main>
+  </div>
+  <dialog id="entryDialog"><form id="entryForm" method="dialog"><div class="dialog-head"><div><p class="eyebrow">NEW ENTRY</p><h3 id="dialogTitle">Add entry</h3></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div><div id="dialogFields" class="form-grid"></div><div class="dialog-actions"><button class="button secondary" value="cancel">Cancel</button><button class="button" id="saveEntry" value="default">Save entry</button></div></form></dialog>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="./app.js"></script>
+</body>
+</html>

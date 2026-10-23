@@ -367,7 +367,8 @@ document.addEventListener("click",async e=>{
   const action=e.target.closest("[data-action]")?.dataset.action;
   if(action==="quick-sale"||action==="add-sale"||action==="add-product"||action==="add-tailoring"||action==="add-expense"||action==="add-payment"){await openForm(action==="quick-sale"?"add-sale":action);return;}
   if(action==="save-shop"){await setting("shopName",$("#shopName").value.trim()||"Fansi Store + Silai");toast("Shop name saved.");return;}
-  if(action==="save-sheets"){await setting("sheetsUrl",$("#sheetsUrl").value.trim());await setting("sheetsToken",$("#sheetsToken").value.trim());toast("Google Sheets connection settings saved on this device.");await render();return;}\n  if(action==="save-supabase"){await saveSupabase();return;}
+  if(action==="save-sheets"){await setting("sheetsUrl",$("#sheetsUrl").value.trim());await setting("sheetsToken",$("#sheetsToken").value.trim());toast("Google Sheets connection settings saved on this device.");await render();return;}
+  if(action==="save-supabase"){await saveSupabase();return;}
   if(action==="sync-now"){await syncNow();return;}
   if(action==="export-json"){await exportJSON();return;}
   if(action==="export-csv"){await exportCSV();return;}

@@ -5,3 +5,19 @@
 #loginDialog{width:min(420px,calc(100% - 32px));border:0;border-radius:16px;padding:22px}#loginDialog .field{margin:12px 0}#loginDialog .button{width:100%}
 
 dialog:not([open]){display:none}.poly-open{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:1000;max-height:90vh;overflow:auto;background:#fff;box-shadow:0 0 0 100vmax #0b241c66}#syncStatus{cursor:pointer}
+/* ---- Mobile overflow fix (dashboard) ---- */
+html,body{overflow-x:hidden}
+.main-content,.panel,.section-card,.content-grid>*{min-width:0}
+
+/* tablet/mobile par ek column, par table apne andar scroll kare */
+@media(max-width:1000px){
+  .content-grid{grid-template-columns:minmax(0,1fr)}
+}
+
+/* table ke andar hi horizontal scroll */
+.table-wrap{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+
+/* quick actions bahar na nikle, text wrap ho */
+.quick-actions{grid-template-columns:repeat(2,minmax(0,1fr))}
+.quick-action{min-width:0}
+.quick-action>*:last-child{min-width:0;overflow-wrap:anywhere}

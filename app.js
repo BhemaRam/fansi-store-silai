@@ -120,12 +120,20 @@ async function renderDashboard(root){
 }
 function recentRows(t){
   const rows=[
-    ...t.sales.map(x=>({type:"Sale",detail:x.customer||x.item||"Counter sale",date:x.date,amount:x.total})),
-    ...t.tailoring.map(x=>({type:"Silai",detail:x.customer||x.garment||"Tailoring order",date:x.date,amount:x.charge})),
-    ...t.expenses.map(x=>({type:"Expense",detail:x.category||x.note||"Expense",date:x.date,amount:-Number(x.amount||0)}))
-  ].sort((a,b)=>(b.date||"").localeCompare(a.date||"")).slice(0,7);
+    ...t.sales.map(x=>({type:"Sale",detail:x.customer||x.item||"Counter sale",date:x.date,ts:x.created_at,amount:x.total})),
+    ...t.tailoring.map(x=>({type:"Silai",detail:x.customer||x.garment||"Tailoring order",date:x.date,ts:x.created_at,amount:x.charge})),
+    ...t.expenses.map(x=>({type:"Expense",detail:x.category||x.note||"Expense",date:x.date,ts:x.created_at,amount:-Number(x.amount||0)}))
+  ].sort((a,b)=>(b.date||"").localeCompare(a.date||"")||(b.ts||"").localeCompare(a.ts||"")).slice(0,10);
   return rows.length?rows.map(x=>`<tr><td>${esc(x.type)}</td><td><strong>${esc(x.detail)}</strong></td><td>${esc(x.date||"—")}</td><td>${rupees(x.amount)}</td></tr>`).join(""):emptyRow(4);
 }
+// function recentRows(t){
+//   const rows=[
+//     ...t.sales.map(x=>({type:"Sale",detail:x.customer||x.item||"Counter sale",date:x.date,amount:x.total})),
+//     ...t.tailoring.map(x=>({type:"Silai",detail:x.customer||x.garment||"Tailoring order",date:x.date,amount:x.charge})),
+//     ...t.expenses.map(x=>({type:"Expense",detail:x.category||x.note||"Expense",date:x.date,amount:-Number(x.amount||0)}))
+//   ].sort((a,b)=>(b.date||"").localeCompare(a.date||"")).slice(0,7);
+//   return rows.length?rows.map(x=>`<tr><td>${esc(x.type)}</td><td><strong>${esc(x.detail)}</strong></td><td>${esc(x.date||"—")}</td><td>${rupees(x.amount)}</td></tr>`).join(""):emptyRow(4);
+// }
 async function renderStock(root){
   const items=await all("products");
   const filtered=items.filter(x=>`${x.name} ${x.category} ${x.sku}`.toLowerCase().includes(searchTerm));

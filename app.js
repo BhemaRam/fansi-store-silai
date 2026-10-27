@@ -1,7 +1,14 @@
 /* Fansi Store + Silai MVP
-   Offline-first local database: IndexedDB. Cloud sync: optional Supabase.
-   Configure Supabase in Settings before using cross-device sync.
+   Offline-first local database: IndexedDB. Cloud sync: Google Sheets via Apps Script (PIN login, Owner/Staff).
 */
+if(typeof window.showFatal!=="function")window.showFatal=function(e){console.error(e)};
+// Purane browsers (jaise iOS < 15.4) me <dialog> nahi hota: fallback.
+if(typeof HTMLDialogElement==="undefined"||!HTMLDialogElement.prototype.showModal){
+  Object.defineProperty(HTMLElement.prototype,"open",{get:function(){return this.hasAttribute("open");},configurable:true});
+  HTMLElement.prototype.showModal=function(){this.setAttribute("open","");this.classList.add("poly-open");};
+  HTMLElement.prototype.close=function(){this.removeAttribute("open");this.classList.remove("poly-open");this.dispatchEvent(new Event("close"));};
+  document.addEventListener("submit",function(e){if(e.target.getAttribute("method")==="dialog"){e.preventDefault();var d=e.target.closest("dialog");if(d)d.close();}});
+}
 const DB_NAME = "fansi-silai-db";
 const DB_VERSION = 1;
 const STORES = ["products","sales","tailoring","customers","expenses","payments","suppliers","syncQueue","settings"];
@@ -11,7 +18,7 @@ const rupees = n => new Intl.NumberFormat("en-IN",{style:"currency",currency:"IN
 const today = () => new Date().toISOString().slice(0,10);
 const uid = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 let db, activeView = "dashboard", activeFormType = "", toastTimer;
-let supabaseClient = null;
+let session = {role:"",pin:""}, editingId = "", syncTimer, lastSyncError = "";
 let sheetsSyncBusy = false;
 let searchTerm = "";
 
@@ -62,11 +69,22 @@ function pageHead(title,desc,buttonText,action){
 function tablePanel(title,subtitle,headers,rows,extra=""){
   return `<section class="panel"><div class="panel-head"><div><h3>${title}</h3><p>${subtitle}</p></div>${extra}</div><div class="table-wrap"><table><thead><tr>${headers.map(h=>`<th>${h}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div></section>`;
 }
+function buildLedger(sales,orders,payments,customers){
+  // Due = bills ka baaki (total - paid) + opening balance - received payments (naam se match).
+  const people=new Map(),key=n=>(n||"").trim().toLowerCase()||"(walk-in)";
+  const get=name=>{const k=key(name);let p=people.get(k);if(!p){p={name:(name||"").trim()||"Walk-in (bina naam)",kind:"Customer",due:0,walkin:!(name||"").trim()};people.set(k,p);}return p;};
+  sales.forEach(x=>{get(x.customer).due+=Math.max(0,Number(x.total||0)-Number(x.paid||0));});
+  orders.forEach(x=>{get(x.customer).due+=Math.max(0,Number(x.charge||0)-Number(x.paid||0));});
+  customers.forEach(x=>{if(!x.name)return;const p=get(x.name);p.phone=x.phone;p.due+=Number(x.openingBalance||0);});
+  payments.forEach(x=>{if(["Customer received","Advance for silai"].includes(x.type))get(x.person).due-=Number(x.amount||0);});
+  return people;
+}
 async function totals(){
   const [sales,expenses,payments,tailoring,products,queue]=await Promise.all([all("sales"),all("expenses"),all("payments"),all("tailoring"),all("products"),all("syncQueue")]);
   const daySales=sales.filter(x=>x.date===today()).reduce((s,x)=>s+Number(x.total||0),0);
   const dayExpense=expenses.filter(x=>x.date===today()).reduce((s,x)=>s+Number(x.amount||0),0);
-  const outstanding=sales.reduce((s,x)=>s+Math.max(0,Number(x.total||0)-Number(x.paid||0)),0)+tailoring.reduce((s,x)=>s+Math.max(0,Number(x.charge||0)-Number(x.paid||0)),0);
+  const customersAll=await all("customers");
+  const outstanding=[...buildLedger(sales,tailoring,payments,customersAll).values()].reduce((s,x)=>s+Math.max(0,x.due),0);
   const stockValue=products.reduce((s,x)=>s+Number(x.stock||0)*Number(x.cost||0),0);
   return {sales,expenses,payments,tailoring,products,queue,daySales,dayExpense,outstanding,stockValue,allSales:sales.reduce((s,x)=>s+Number(x.total||0),0)};
 }
@@ -113,7 +131,7 @@ async function renderStock(root){
   const filtered=items.filter(x=>`${x.name} ${x.category} ${x.sku}`.toLowerCase().includes(searchTerm));
   root.innerHTML=pageHead("Stock & Purchase","Kapde, accessories aur stock quantity manage karein.","Add stock","add-product")+`
   <div class="toolbar"><input class="search" id="searchBox" placeholder="Search kapda, category, SKU..." value="${esc(searchTerm)}"><div class="mini-kpis"><span class="mini-kpi">Items: <b>${items.length}</b></span><span class="mini-kpi">Low stock: <b>${items.filter(x=>Number(x.stock)<=Number(x.lowStock||0)).length}</b></span></div></div>
-  ${tablePanel("Inventory","Quantity meter ya pieces mein enter karein",["Item / SKU","Category","Unit","Stock","Cost / unit","Sell / unit","Status",""],filtered.length?filtered.map(x=>`<tr><td><strong>${esc(x.name)}</strong><br><small>${esc(x.sku||"No SKU")}</small></td><td>${esc(x.category||"—")}</td><td>${esc(x.unit||"piece")}</td><td>${Number(x.stock||0)}</td><td>${rupees(x.cost)}</td><td>${rupees(x.price)}</td><td>${Number(x.stock||0)<=Number(x.lowStock||0)?'<span class="tag pending">Low stock</span>':'<span class="tag">In stock</span>'}</td><td><button class="text-button" data-edit-product="${x.id}">Edit</button></td></tr>`).join(""):emptyRow(8,"Stock item nahi mila.") )}`;
+  ${tablePanel("Inventory","Quantity meter ya pieces mein enter karein",["Item / SKU","Category","Unit","Stock","Cost / unit","Sell / unit","Status",""],filtered.length?filtered.map(x=>`<tr><td><strong>${esc(x.name)}</strong><br><small>${esc(x.sku||"No SKU")}</small></td><td>${esc(x.category||"—")}</td><td>${esc(x.unit||"piece")}</td><td>${Number(x.stock||0)}</td><td>${rupees(x.cost)}</td><td>${rupees(x.price)}</td><td>${Number(x.stock||0)<=Number(x.lowStock||0)?'<span class="tag pending">Low stock</span>':'<span class="tag">In stock</span>'}</td><td><button class="text-button" data-edit-product="${x.id}">Edit</button>${session.role==="owner"?` <button class="text-button" data-del-product="${x.id}">Delete</button>`:""}</td></tr>`).join(""):emptyRow(8,"Stock item nahi mila.") )}`;
 }
 async function renderSales(root){
   const sales=(await all("sales")).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
@@ -131,16 +149,12 @@ async function renderTailoring(root){
 }
 async function renderKhata(root){
   const [customers,sales,orders,payments]=await Promise.all([all("customers"),all("sales"),all("tailoring"),all("payments")]);
-  const people=new Map();
-  const add=(name,kind,amount)=>{if(!name)return;const key=name.trim().toLowerCase();const p=people.get(key)||{name,kind,due:0,paid:0};p.due+=amount;people.set(key,p);};
-  sales.forEach(x=>add(x.customer,"Customer",Math.max(0,Number(x.total||0)-Number(x.paid||0))));
-  orders.forEach(x=>add(x.customer,"Customer",Math.max(0,Number(x.charge||0)-Number(x.paid||0))));
-  customers.forEach(x=>{const p=people.get(x.name.toLowerCase())||{name:x.name,kind:"Customer",due:0,paid:0};p.phone=x.phone;people.set(x.name.toLowerCase(),p);});
-  const customerRows=[...people.values()].filter(x=>(x.name+" "+(x.phone||"")).toLowerCase().includes(searchTerm)).map(x=>'<tr><td><strong>'+esc(x.name)+'</strong></td><td>'+esc(x.phone||"—")+'</td><td>'+esc(x.kind)+'</td><td>'+rupees(x.due)+'</td><td><button class="text-button" data-pay-customer="'+esc(x.name)+'">Add payment</button></td></tr>').join("")||emptyRow(5);
+  const people=buildLedger(sales,orders,payments,customers);
+  const customerRows=[...people.values()].filter(x=>!(x.walkin&&Math.abs(x.due)<0.005)).filter(x=>(x.name+" "+(x.phone||"")).toLowerCase().includes(searchTerm)).map(x=>'<tr><td><strong>'+esc(x.name)+'</strong></td><td>'+esc(x.phone||"—")+'</td><td>'+esc(x.kind)+'</td><td>'+(x.due<-0.005?'<span class="tag">Advance '+rupees(-x.due)+'</span>':rupees(x.due))+'</td><td><button class="text-button" data-pay-customer="'+esc(x.name)+'">Add payment</button></td></tr>').join("")||emptyRow(5);
   const paymentRows=payments.sort((a,b)=>(b.date||"").localeCompare(a.date||"")).slice(0,20).map(x=>'<tr><td>'+esc(x.date)+'</td><td>'+esc(x.person)+'</td><td>'+rupees(x.amount)+'</td><td>'+esc(x.method)+'</td><td>'+esc(x.note||"—")+'</td></tr>').join("")||emptyRow(5);
   root.innerHTML=pageHead("Khata / Payments","Customer balance aur payment history manage karein.","Record payment","add-payment")+
-    '<div class="toolbar"><input class="search" id="searchBox" placeholder="Search customer name..." value="'+esc(searchTerm)+'"><div class="mini-kpis"><span class="mini-kpi">Customers: <b>'+people.size+'</b></span><span class="mini-kpi">Total due: <b>'+rupees([...people.values()].reduce((s,x)=>s+x.due,0))+'</b></span></div></div>'+
-    tablePanel("Customer ledger","Due amounts sales aur silai orders se calculate hote hain",["Customer","Phone","Type","Outstanding due","Action"],customerRows)+
+    '<div class="toolbar"><input class="search" id="searchBox" placeholder="Search customer name..." value="'+esc(searchTerm)+'"><div class="mini-kpis"><span class="mini-kpi">Customers: <b>'+people.size+'</b></span><span class="mini-kpi">Total due: <b>'+rupees([...people.values()].reduce((s,x)=>s+Math.max(0,x.due),0))+'</b></span></div></div>'+
+    tablePanel("Customer ledger","Due = bills ka baaki − received payments (\"Customer received\" / \"Advance for silai\")",["Customer","Phone","Type","Outstanding due","Action"],customerRows)+
     '<div style="height:16px"></div>'+tablePanel("Recent payments","Payment entries recorded",["Date","Customer / Supplier","Amount","Method","Note"],paymentRows);
 }
 async function renderExpenses(root){
@@ -164,13 +178,8 @@ async function renderSettings(root){
   <div class="settings-grid">
     <section class="settings-card"><h3>Shop profile</h3><p>Apne business ka display name set karein.</p><div class="field"><label>Shop name</label><input id="shopName" value="${esc(shop)}"></div><button class="button" data-action="save-shop">Save shop name</button></section>
     <section class="settings-card"><h3>Offline status</h3><p>Current device ke local database ki details.</p><div class="mini-kpis"><span class="mini-kpi">Pending sync: <b>${pending}</b></span><span class="mini-kpi">Browser: <b>IndexedDB</b></span></div><p>Local data isi browser/device mein hota hai. Browser data clear karne se unsynced entries delete ho sakti hain.</p><button class="button secondary" data-action="export-json">Export local backup (JSON)</button></section>
-    <section class="settings-card"><h3>Google Sheets connection (testing)</h3><p>Paste your deployed Apps Script Web App URL. Configure the matching API token in Apps Script Script Properties. Do not use this shared-token approach for sensitive production data.</p>
-      <div class="field"><label>Apps Script Web App URL</label><input id="sheetsUrl" type="url" placeholder="https://script.google.com/macros/s/.../exec" value="${esc(url)}"></div>
-      <div class="field"><label>API token (testing only)</label><input id="sheetsToken" type="password" autocomplete="off" placeholder="Same value as API_TOKEN Script Property" value="${esc(token)}"></div>
-      <button class="button" data-action="save-sheets">Save connection</button> <button class="button secondary" data-action="sync-now">Sync pending</button>
-      <p id="sheetsHelp" class="help">First update Apps Script so both upload and pull are authenticated. Browser-to-Apps-Script CORS/redirect behavior must be tested on your hosted app before real data is used.</p>
-    </section>
-    <section class="settings-card"><h3>Owner & staff access</h3><p>This MVP does not yet implement production-grade sign-in or owner/staff/karigar permissions.</p><div class="notice">A token stored in browser settings is visible to that browser's user. Do not use this method for real customer/payment records or public staff deployments.</div></section>
+    <section class="settings-card"><h3>Google Sheets sync</h3><p>Login: <b>${session.role==="owner"?"Owner":"Staff"}</b> · Pending: <b>${pending}</b></p><p class="help">Sheet URL: ${esc(url)}</p>${lastSyncError?`<div class="notice">Last sync error: ${esc(lastSyncError)}</div>`:""}<button class="button" data-action="sync-now">Sync now</button> <button class="button secondary" data-action="logout">Logout</button><p class="help">App har 45 second me khud sync karta hai (internet ho to). Entry offline bhi save hoti hai.</p></section>
+    <section class="settings-card"><h3>Owner & staff access</h3><p>Owner: sab kuch (expenses, reports, delete). Staff: stock, sales, silai, khata. Staff ko expenses/reports nahi dikhte. PIN Apps Script ke Script Properties me set hota hai.</p></section>
   </div>
   <p class="footer-note">Export JSON backups regularly. Local offline records are stored separately on each device and become shared only after successful sync.</p>`;
 }
@@ -201,7 +210,7 @@ function fieldHTML(f){
 }
 async function openForm(type, preset={}){
   const def=forms[type];if(!def)return;
-  activeFormType=type;$("#dialogTitle").textContent=def.title;
+  activeFormType=type;editingId=(type==="add-product"&&preset&&preset.id)?preset.id:"";$("#dialogTitle").textContent=def.title;
   $("#dialogFields").innerHTML=def.fields.map(fieldHTML).join("");
   if(type==="add-sale"){
     const products=await all("products"),sel=$('[name="productId"]');
@@ -219,13 +228,13 @@ async function saveForm(){
   for(const f of def.fields){const el=form.elements.namedItem(f[0]);if(el)data[f[0]]=el.value;}
   const numeric=["stock","cost","price","lowStock","qty","total","paid","charge","amount"];
   numeric.forEach(k=>{if(k in data)data[k]=Number(data[k]||0);});
-  const id=uid();data.id=id;data.created_at=new Date().toISOString();data.updated_at=data.created_at;
-  if(activeFormType==="add-product"){data.lowStock=Number(data.lowStock||0);data.stock=Number(data.stock||0);}
+  const prev=editingId?await get(def.store,editingId):null;data.id=editingId||uid();data.created_at=prev?.created_at||new Date().toISOString();data.updated_at=new Date().toISOString();
+  if(activeFormType==="add-product"){data.lowStock=Number(data.lowStock||0);data.stock=Number(data.stock||0);if(prev)await queueMove(data.id,data.stock-Number(prev.stock||0));}
   if(activeFormType==="add-sale"){
     data.billNo="BILL-"+Date.now().toString().slice(-7);
     if(data.productId){
       const p=await get("products",data.productId);
-      if(p){p.stock=Number(p.stock||0)-Number(data.qty||0);p.updated_at=new Date().toISOString();await put("products",p);await queueChange("products",p);}
+      if(p){p.stock=Number(p.stock||0)-Number(data.qty||0);await put("products",p);await queueMove(p.id,-Number(data.qty||0));}
     }
   }
   if(activeFormType==="add-tailoring")data.orderNo="SIL-"+Date.now().toString().slice(-7);
@@ -234,38 +243,21 @@ async function saveForm(){
     data.person=data.person.trim();
   }
   await put(def.store,data);await queueChange(def.store,data);
-  if(activeFormType==="add-product"&&data.supplier){
+  if(activeFormType==="add-product"&&data.supplier&&!prev){
     const supplier={id:uid(),name:data.supplier,phone:"",created_at:new Date().toISOString()};await put("suppliers",supplier);
   }
-  $("#entryDialog").close();$("#entryForm").reset();toast("Entry saved on this device.");await render();updateSyncBadge();
+  $("#entryDialog").close();$("#entryForm").reset();toast("Entry saved on this device.");await render();updateSyncBadge();scheduleSync();
 }
 async function editProduct(id){
   const p=await get("products",id);if(!p)return;
   await openForm("add-product",p);
-}
-async function saveSupabase(){
-  const url=$("#supabaseUrl")?.value.trim(),key=$("#supabaseKey")?.value.trim();
-  if(!url||!key){toast("Supabase URL aur key dono enter karein.");return;}
-  await setting("supabaseUrl",url);await setting("supabaseKey",key);
-  try{
-    if(!window.supabase?.createClient)throw new Error("Supabase JS library load nahi hui. Internet check karein.");
-    supabaseClient=window.supabase.createClient(url,key);
-    const {error}=await supabaseClient.from("sync_records").select("id").limit(1);
-    if(error)throw error;
-    $("#supabaseHelp").textContent="Cloud connection successful. Ab Sync now try karein.";
-    toast("Supabase connected.");updateSyncBadge();
-  }catch(e){$("#supabaseHelp").textContent="Connection check failed: "+e.message+" — schema and policies verify karein.";toast("Connection check failed. Settings check karein.");}
-}
-async function initSupabase(){
-  const url=await setting("supabaseUrl"),key=await setting("supabaseKey");
-  if(url&&key&&window.supabase?.createClient){supabaseClient=window.supabase.createClient(url,key);}
 }
 const SHEET_TYPES = {
   products:"Products", sales:"Sales", tailoring:"Tailoring_Orders",
   customers:"Customers", payments:"Payments", expenses:"Expenses"
 };
 function toSheetData(type, r){
-  const common={id:r.id,updatedAt:r.updated_at||r.updatedAt||new Date().toISOString(),deleted:false};
+  const common={id:r.id,updatedAt:r.updated_at||r.updatedAt||new Date().toISOString(),deleted:false,extraJson:JSON.stringify(r)};
   if(type==="products") return {...common,name:r.name||"",sku:r.sku||"",category:r.category||"",quantity:Number(r.stock||r.quantity||0),purchasePrice:Number(r.cost||r.purchasePrice||0),sellingPrice:Number(r.price||r.sellingPrice||0)};
   if(type==="sales") return {...common,billNo:r.billNo||r.id,customerId:r.customerId||"",date:r.date||"",itemsJson:JSON.stringify([{item:r.item||"",qty:Number(r.qty||0),unit:r.unit||"",price:Number(r.price||0),productId:r.productId||""}]),subtotal:Number(r.total||0),discount:0,total:Number(r.total||0),paid:Number(r.paid||0),paymentStatus:Number(r.paid||0)>=Number(r.total||0)?"paid":"partial"};
   if(type==="tailoring") return {...common,orderNo:r.orderNo||r.id,customerId:r.customerId||"",customerName:r.customer||r.customerName||"",phone:r.phone||"",measurementsJson:JSON.stringify(r.measurements||{}),itemsJson:JSON.stringify([{garment:r.garment||""}]),orderDate:r.date||"",deliveryDate:r.deliveryDate||"",amount:Number(r.charge||0),paid:Number(r.paid||0),status:r.status||"Pending",notes:r.note||""};
@@ -274,12 +266,13 @@ function toSheetData(type, r){
   if(type==="expenses") return {...common,date:r.date||"",category:r.category||"",description:r.note||r.description||"",amount:Number(r.amount||0),paidBy:r.paidTo||r.paidBy||""};
   return {...common,...r};
 }
-function fromSheetData(type, d){
+function fromSheetData(type, d){let extra={};try{extra=JSON.parse(d.extraJson||"{}")}catch(_){}return {...extra,...fromSheetData0(type,d)};}
+function fromSheetData0(type, d){
   const common={id:String(d.id),updated_at:d.updatedAt?new Date(d.updatedAt).toISOString():new Date().toISOString(),created_at:d.updatedAt?new Date(d.updatedAt).toISOString():new Date().toISOString()};
-  if(type==="products") return {...common,name:d.name||"",sku:d.sku||"",category:d.category||"",stock:Number(d.quantity||0),cost:Number(d.purchasePrice||0),price:Number(d.sellingPrice||0),unit:"meter",lowStock:0};
+  if(type==="products") return {...common,name:d.name||"",sku:d.sku||"",category:d.category||"",stock:Number(d.quantity||0),cost:Number(d.purchasePrice||0),price:Number(d.sellingPrice||0)};
   if(type==="sales"){
     let item={};try{item=JSON.parse(d.itemsJson||"[]")[0]||{}}catch(_){}
-    return {...common,billNo:d.billNo||d.id,customerId:d.customerId||"",date:d.date||"",item:item.item||"",qty:Number(item.qty||0),unit:item.unit||"",price:Number(item.price||0),productId:item.productId||"",total:Number(d.total||0),paid:Number(d.paid||0),paymentMethod:"",customer:""};
+    return {...common,billNo:d.billNo||d.id,customerId:d.customerId||"",date:d.date||"",item:item.item||"",qty:Number(item.qty||0),unit:item.unit||"",price:Number(item.price||0),productId:item.productId||"",total:Number(d.total||0),paid:Number(d.paid||0)};
   }
   if(type==="tailoring"){
     let item={};try{item=JSON.parse(d.itemsJson||"[]")[0]||{}}catch(_){}
@@ -287,64 +280,105 @@ function fromSheetData(type, d){
     return {...common,orderNo:d.orderNo||d.id,customerId:d.customerId||"",customer:d.customerName||"",phone:d.phone||"",garment:item.garment||"",measurements, date:d.orderDate||"",deliveryDate:d.deliveryDate||"",charge:Number(d.amount||0),paid:Number(d.paid||0),status:d.status||"Pending",note:d.notes||""};
   }
   if(type==="customers") return {...common,name:d.name||"",phone:d.phone||"",address:d.address||"",openingBalance:Number(d.openingBalance||0)};
-  if(type==="payments") return {...common,customerId:d.customerId||"",referenceId:d.referenceId||"",date:d.date||"",amount:Number(d.amount||0),method:d.method||"",note:d.notes||"",person:""};
-  if(type==="expenses") return {...common,date:d.date||"",category:d.category||"",note:d.description||"",amount:Number(d.amount||0),paidTo:d.paidBy||"",paymentMethod:""};
+  if(type==="payments") return {...common,customerId:d.customerId||"",referenceId:d.referenceId||"",date:d.date||"",amount:Number(d.amount||0),method:d.method||"",note:d.notes||""};
+  if(type==="expenses") return {...common,date:d.date||"",category:d.category||"",note:d.description||"",amount:Number(d.amount||0),paidTo:d.paidBy||""};
   return {...common,...d};
 }
 async function sheetsRequest(payload){
-  const url=await setting("sheetsUrl"), token=await setting("sheetsToken");
-  if(!url||!token) throw new Error("Settings mein Apps Script URL aur testing token configure karein.");
-  // text/plain avoids a JSON preflight request; Apps Script redirects/CORS may still block browser access.
-  const response=await fetch(url,{method:"POST",mode:"cors",redirect:"follow",headers:{"Content-Type":"text/plain;charset=UTF-8"},body:JSON.stringify({...payload,token})});
+  const url=await setting("sheetsUrl");
+  if(!url||!session.pin) throw new Error("Pehle login karein.");
+  // text/plain => no CORS preflight; Apps Script Web App ("Anyone") allows this.
+  const response=await fetch(url,{method:"POST",mode:"cors",redirect:"follow",headers:{"Content-Type":"text/plain;charset=UTF-8"},body:JSON.stringify({...payload,pin:session.pin})});
   if(!response.ok) throw new Error("HTTP "+response.status);
   const result=await response.json();
   if(!result.ok) throw new Error(result.error||"Apps Script request failed");
   return result;
 }
-async function syncNow(){
-  if(sheetsSyncBusy)return;
-  if(!navigator.onLine){toast("Internet nahi hai. Entries local save hain; online aane par sync hongi.");return;}
-  const url=await setting("sheetsUrl"),token=await setting("sheetsToken");
-  if(!url||!token){toast("Settings mein Google Sheets URL aur API token configure karein.");activeView="settings";await render();return;}
-  sheetsSyncBusy=true;
-  const pending=(await all("syncQueue")).sort((a,b)=>a.created_at.localeCompare(b.created_at));
-  setStatus("Syncing…","syncing");
+async function queueMove(productId,delta){if(!delta)return;await queueChange("stockMove",{id:uid(),productId,delta,date:new Date().toISOString()});}
+function scheduleSync(){clearTimeout(syncTimer);syncTimer=setTimeout(()=>syncNow({silent:true}),1500);}
+async function syncNow(opts){
+  const silent=!!(opts&&opts.silent===true);
+  if(sheetsSyncBusy||!session.pin)return;
+  if(!navigator.onLine){if(!silent)toast("Internet nahi hai. Entries local save hain; online aane par sync hongi.");updateSyncBadge();return;}
+  sheetsSyncBusy=true;setStatus("Syncing…","syncing");let changed=0,authFail=false;
   try{
-    for(const item of pending){
-      const type=SHEET_TYPES[item.table];
-      if(!type) { item.attempts=(item.attempts||0)+1;item.last_error="Unsupported local store: "+item.table;await put("syncQueue",item);continue; }
-      const result=await sheetsRequest({records:[{type,id:item.record.id,data:toSheetData(item.table,item.record)}]});
-      if(!result.results||!result.results[0]||!result.results[0].ok) throw new Error(result.results?.[0]?.error||"Write not confirmed");
-      await remove("syncQueue",item.id);
-    }
-    // Pull remote rows for each supported store. Apps Script must implement authenticated POST pull.
-    for(const [localType,sheetType] of Object.entries(SHEET_TYPES)){
-      const result=await sheetsRequest({action:"pull",type:sheetType});
-      const records=result.records||[];
-      for(const remote of records){
-        if(!remote.id||remote.deleted===true||String(remote.deleted).toLowerCase()==="true")continue;
-        const local=fromSheetData(localType,remote), existing=await get(localType,local.id);
-        const remoteTime=Date.parse(local.updated_at||"")||0, localTime=Date.parse(existing?.updated_at||"")||0;
-        if(!existing||remoteTime>localTime) await put(localType,local);
+    // 1) PUSH: queue ko 100-100 ke batch me bhejo
+    const queue=(await all("syncQueue")).sort((a,b)=>a.created_at.localeCompare(b.created_at));
+    for(let i=0;i<queue.length;i+=100){
+      const chunk=queue.slice(i,i+100),records=[],moves=[];
+      for(const q of chunk){
+        if(q.table==="stockMove")moves.push(q.record);
+        else if(SHEET_TYPES[q.table]){const data=toSheetData(q.table,q.record);if(q.operation==="delete")data.deleted=true;records.push({type:SHEET_TYPES[q.table],id:q.record.id,data});}
+      }
+      const res=records.length||moves.length?await sheetsRequest({action:"push",records,moves}):{results:{}};
+      for(const q of chunk){
+        const known=q.table==="stockMove"||SHEET_TYPES[q.table],r=res.results[q.record.id];
+        if((r&&r.ok)||!known)await remove("syncQueue",q.id);
+        else{q.attempts=(q.attempts||0)+1;q.last_error=r?.error||"Confirm nahi hua";await put("syncQueue",q);}
       }
     }
-    setStatus("Google Sheets sync complete","online");
-    toast("Google Sheets sync complete.");
+    // 2) PULL: sirf last sync ke baad badle records (2 min overlap safety)
+    const left=await all("syncQueue"),pendingIds=new Set(left.map(q=>q.table==="stockMove"?q.record.productId:q.record.id));
+    for(const [localType,sheetType] of Object.entries(SHEET_TYPES)){
+      if(session.role!=="owner"&&sheetType==="Expenses")continue;
+      const key="lastPull_"+localType,last=await setting(key);
+      const since=last?new Date(Date.parse(last)-120000).toISOString():"";
+      const res=await sheetsRequest({action:"pull",type:sheetType,since});
+      for(const remote of res.records||[]){
+        if(!remote.id)continue;const id=String(remote.id);
+        if(pendingIds.has(id))continue; // is device ki unsynced entry ko overwrite na karein
+        if(remote.deleted===true||String(remote.deleted).toLowerCase()==="true"){if(await get(localType,id)){await remove(localType,id);changed++;}continue;}
+        await put(localType,fromSheetData(localType,remote));changed++;
+      }
+      await setting(key,res.serverTime);
+    }
+    const failed=(await all("syncQueue")).filter(q=>q.last_error).length;
+    lastSyncError=failed?((await all("syncQueue")).find(q=>q.last_error)||{}).last_error:"";
+    setStatus(failed?failed+" entry sync nahi hui":"Synced",failed?"offline":"online");
+    if(!silent)toast(failed?"Kuch entries sync nahi hui (Settings dekhein).":"Sync complete.");
   }catch(e){
-    console.error("Sheets sync failed",e);
-    setStatus("Sync issue","offline");
-    toast("Sync fail hua: "+e.message);
+    console.error("Sync failed",e);lastSyncError=e.message;setStatus("Sync issue","offline");authFail=/PIN/.test(e.message);
+    if(!silent)toast("Sync fail hua: "+e.message);
   }finally{
-    sheetsSyncBusy=false;updateSyncBadge();await render();
+    sheetsSyncBusy=false;await updateSyncBadge();
+    if(authFail)await showLogin("PIN badal gaya ya galat hai. Dobara login karein.");
+    else if(changed&&!$("#entryDialog").open&&!(silent&&document.activeElement&&/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)))await render();
   }
+}
+// ---- Login / roles ----
+async function showLogin(msg){
+  const d=$("#loginDialog");$("#loginUrl").value=await setting("sheetsUrl")||"";$("#loginMsg").textContent=msg||"";
+  if(!d.open)d.showModal();
+}
+async function doLogin(){
+  const url=$("#loginUrl").value.trim(),pin=$("#loginPin").value.trim();
+  if(!url||!pin){$("#loginMsg").textContent="URL aur PIN dono daalein.";return;}
+  $("#loginBtn").disabled=true;$("#loginMsg").textContent="Check ho raha hai…";
+  try{
+    await setting("sheetsUrl",url);session={role:"",pin};
+    const res=await sheetsRequest({action:"login"});
+    session={role:res.role,pin};await setting("session",session);
+    $("#loginPin").value="";$("#loginDialog").close();applyRole();await render();await updateSyncBadge();syncNow({silent:true});
+  }catch(e){session={role:"",pin:""};$("#loginMsg").textContent="Login nahi hua: "+e.message;}
+  finally{$("#loginBtn").disabled=false;}
+}
+async function logout(){
+  const pending=(await all("syncQueue")).length;
+  if(pending&&!confirm(pending+" entries abhi sync nahi hui. Logout karein?"))return;
+  await setting("session",null);session={role:"",pin:""};applyRole();await showLogin("Logout ho gaye.");
+}
+function applyRole(){
+  const owner=session.role==="owner";
+  $$('[data-view="expenses"],[data-view="reports"]').forEach(b=>b.style.display=owner?"":"none");
+  $("#roleBadge").textContent=session.role?(owner?"Owner":"Staff"):"";
+  if(!owner&&["expenses","reports"].includes(activeView)){activeView="dashboard";$$(".nav-item").forEach(x=>x.classList.toggle("active",x.dataset.view==="dashboard"));}
 }
 function setStatus(text,cls){const el=$("#syncStatus");el.textContent=text;el.className="status "+cls;}
 async function updateSyncBadge(){
   const pending=(await all("syncQueue")).length;
   if(!navigator.onLine)setStatus(`Offline · ${pending} pending`,"offline");
-  else if(pending)setStatus(`${pending} pending sync`,"offline");
-  else if(supabaseClient)setStatus("Cloud connected","online");
-  else setStatus("Local mode","offline");
+  else if(pending)setStatus(lastSyncError?`${pending} pending · sync error (Settings dekhein)`:`${pending} pending sync`,"offline");
+  else setStatus(session.pin?"Synced":"Login karein",session.pin?"online":"offline");
 }
 async function exportJSON(){
   const data={exported_at:new Date().toISOString(),stores:{}};
@@ -367,11 +401,11 @@ document.addEventListener("click",async e=>{
   const action=e.target.closest("[data-action]")?.dataset.action;
   if(action==="quick-sale"||action==="add-sale"||action==="add-product"||action==="add-tailoring"||action==="add-expense"||action==="add-payment"){await openForm(action==="quick-sale"?"add-sale":action);return;}
   if(action==="save-shop"){await setting("shopName",$("#shopName").value.trim()||"Fansi Store + Silai");toast("Shop name saved.");return;}
-  if(action==="save-sheets"){await setting("sheetsUrl",$("#sheetsUrl").value.trim());await setting("sheetsToken",$("#sheetsToken").value.trim());toast("Google Sheets connection settings saved on this device.");await render();return;}
-  if(action==="save-supabase"){await saveSupabase();return;}
   if(action==="sync-now"){await syncNow();return;}
+  if(action==="logout"){await logout();return;}
   if(action==="export-json"){await exportJSON();return;}
   if(action==="export-csv"){await exportCSV();return;}
+  const del=e.target.closest("[data-del-product]");if(del){if(confirm("Is stock item ko delete karein?")){const p=await get("products",del.dataset.delProduct);if(p){await remove("products",p.id);await queueChange("products",p,"delete");await render();scheduleSync();}}return;}
   const edit=e.target.closest("[data-edit-product]");if(edit){await editProduct(edit.dataset.editProduct);return;}
   const pay=e.target.closest("[data-pay-customer]");if(pay){await openForm("add-payment",{person:pay.dataset.payCustomer,type:"Customer received"});return;}
 });
@@ -383,6 +417,18 @@ window.addEventListener("online",()=>{updateSyncBadge();syncNow();});
 window.addEventListener("offline",updateSyncBadge);
 if("serviceWorker" in navigator && location.protocol!=="file:")window.addEventListener("load",()=>navigator.serviceWorker.register("./sw.js").catch(console.warn));
 (async function boot(){
-  try{db=await openDB();await initSupabase();await render();await updateSyncBadge();}
-  catch(e){console.error(e);$("#viewRoot").innerHTML=`<div class="notice">App database start nahi ho paya. Is app ko local file ki tarah open karne ke bajay local web server ya HTTPS hosting par run karein. Detail: ${esc(e.message)}</div>`;}
+  window.__appBooted=true;
+  try{
+    db=await openDB();const saved=await setting("session");
+    if(saved&&saved.pin){session=saved;applyRole();}
+    try{await render();await updateSyncBadge();}catch(e){console.error(e);showFatal(e);}
+    if(session.pin)syncNow({silent:true});else await showLogin();
+  }catch(e){console.error(e);showFatal(e);$("#viewRoot").innerHTML=`<div class="notice">App database start nahi ho paya. Detail: ${esc(e.message)}. Private/incognito tab ya WhatsApp/Instagram ke andar ke browser me ye ho sakta hai: link ko Chrome me kholein.</div>`;}
 })();
+
+$("#loginBtn").addEventListener("click",e=>{e.preventDefault();doLogin();});
+$("#loginDialog").addEventListener("cancel",e=>e.preventDefault());
+setInterval(()=>{if(session.pin&&navigator.onLine&&!document.hidden)syncNow({silent:true});},45000);
+document.addEventListener("visibilitychange",()=>{if(!document.hidden&&session.pin)syncNow({silent:true});});
+
+$("#syncStatus").addEventListener("click",()=>{if(!session.pin)showLogin();});

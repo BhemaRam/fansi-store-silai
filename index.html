@@ -5,14 +5,15 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#173b32">
   <meta name="description" content="Offline-first Fansi Store and Silai Management">
+  <link rel="apple-touch-icon" href="./icon-192.png">
   <link rel="manifest" href="./manifest.webmanifest">
-  <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./styles.css?v=3">
   <title>Fansi Store + Silai</title>
 </head>
 <body>
   <header class="topbar">
     <div class="brand"><div class="brandmark">FS</div><div><h1>Fansi Store + Silai</h1><p>Shop management · ₹ INR</p></div></div>
-    <div class="top-actions"><span id="syncStatus" class="status offline">Offline mode</span><button id="syncNow" class="button secondary">Sync now</button></div>
+    <div class="top-actions"><span id="roleBadge" class="status online"></span><span id="syncStatus" class="status offline">Offline mode</span><button id="syncNow" class="button secondary">Sync now</button></div>
   </header>
   <div class="app-shell">
     <aside class="sidebar">
@@ -33,9 +34,15 @@
       <div id="viewRoot"></div>
     </main>
   </div>
-  <dialog id="entryDialog"><form id="entryForm" method="dialog"><div class="dialog-head"><div><p class="eyebrow">NEW ENTRY</p><h3 id="dialogTitle">Add entry</h3></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div><div id="dialogFields" class="form-grid"></div><div class="dialog-actions"><button class="button secondary" value="cancel">Cancel</button><button class="button" id="saveEntry" value="default">Save entry</button></div></form></dialog>
+  <dialog id="entryDialog"><form id="entryForm" method="dialog"><div class="dialog-head"><div><p class="eyebrow">NEW ENTRY</p><h3 id="dialogTitle">Add entry</h3></div><button class="icon-button" value="cancel" formnovalidate aria-label="Close">×</button></div><div id="dialogFields" class="form-grid"></div><div class="dialog-actions"><button class="button secondary" value="cancel" formnovalidate>Cancel</button><button class="button" id="saveEntry" value="default">Save entry</button></div></form></dialog>
+  <dialog id="loginDialog"><form method="dialog" id="loginForm"><p class="eyebrow">LOGIN</p><h3>Fansi Store + Silai</h3><div class="field"><label>Apps Script Web App URL</label><input id="loginUrl" type="url" placeholder="https://script.google.com/macros/s/.../exec"></div><div class="field"><label>Aapka PIN (Owner ya Staff)</label><input id="loginPin" type="password" inputmode="numeric" autocomplete="off"></div><p id="loginMsg" class="help"></p><button class="button" id="loginBtn">Login</button></form></dialog>
   <div id="toast" class="toast" role="status"></div>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="./app.js"></script>
+    <script>
+function showFatal(e){var m=(e&&e.message)||String(e);var b=document.getElementById("errBanner");if(!b){b=document.createElement("div");b.id="errBanner";b.style.cssText="position:fixed;left:8px;right:8px;bottom:8px;z-index:99999;background:#7a1f1f;color:#fff;padding:10px 12px;border-radius:10px;font-size:12px;word-break:break-word";b.onclick=function(){b.remove()};document.body.appendChild(b);}b.textContent="App error: "+m+" (tap to close)";}
+window.addEventListener("error",function(e){showFatal(e.error||e.message)});
+window.addEventListener("unhandledrejection",function(e){showFatal(e.reason)});
+window.addEventListener("load",function(){setTimeout(function(){if(!window.__appBooted)showFatal("App load nahi hui. Page refresh karein ya browser ka site data clear karein.")},3000)});
+</script>
+    <script src="./app.js?v=3"></script>
 </body>
 </html>
